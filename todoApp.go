@@ -5,18 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
-	_ "github.com/lib/pq" // Import pq driver
+	"github.com/joho/godotenv" //for .env file
+	_ "github.com/lib/pq"      // Import pq driver
 )
 
 var db *sql.DB
 
+func init() {
+	// Load the environment variables from the .env file
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+}
 func main() {
 	// Connect to the PostgreSQL database
-	connStr := "postgresql://neondb_owner:ptm2x7TQcisI@ep-royal-waterfall-a1tei57z-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+	connStr := os.Getenv("DATABASE_URL")
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
