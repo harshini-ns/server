@@ -1,32 +1,50 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
+
+	_ "github.com/lib/pq" // Import pq driver
 )
 
-var todoItems map[int64]todo
+var db *sql.DB
 
 func main() {
+	// Connect to the PostgreSQL database
+	connStr := "postgresql://neondb_owner:ptm2x7TQcisI@ep-royal-waterfall-a1tei57z-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+	var err error
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		fmt.Println("Error connecting to database:", err)
+		return
+	}
+	defer db.Close()
+
+	// Ensure the database connection works
+	if err := db.Ping(); err != nil {
+		fmt.Println("Error pinging the database:", err)
+		return
+	}
+	fmt.Println("Connected to the database")
+
 	http.HandleFunc("/todo", postTodo)
 	port := ":8080"
-	todoItems = map[int64]todo{}
-	fmt.Printf("starting server in http://localhost%s\n", port)
+	fmt.Printf("Starting server on http://localhost%s\n", port)
 	if err := http.ListenAndServe(port, nil); err != nil {
 		fmt.Println("Error starting server:", err)
 	}
 }
 
 func postTodo(w http.ResponseWriter, r *http.Request) {
-
 	if r.Method == http.MethodPost {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "failed ", http.StatusInternalServerError)
+			http.Error(w, "failed reading request body", http.StatusInternalServerError)
 			return
 		}
 		defer r.Body.Close()
@@ -39,7 +57,14 @@ func postTodo(w http.ResponseWriter, r *http.Request) {
 
 		id := time.Now().UnixNano()
 		list.Id = id
-		todoItems[id] = list
+
+		// Insert todo into the database
+		query := `INSERT INTO todos (id, name, age, data) VALUES ($1, $2, $3, $4)`
+		_, err = db.Exec(query, list.Id, list.Name, list.Age, list.Data)
+		if err != nil {
+			http.Error(w, "Failed to insert todo", http.StatusInternalServerError)
+			return
+		}
 
 		response := map[string]int64{
 			"id": id,
@@ -51,27 +76,42 @@ func postTodo(w http.ResponseWriter, r *http.Request) {
 		id := query.Get("id")
 
 		if len(id) == 0 {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(todoItems)
-			return
-		}
-
-		intID, _ := strconv.Atoi(id)
-		todo, ok := todoItems[int64(intID)]
-		if ok {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(todo)
-		} else {
-			response := map[string]string{
-				"error": "invalid todo id",
+			// Fetch all todos from the database
+			rows, err := db.Query("SELECT id, name, age, data FROM todos")
+			if err != nil {
+				http.Error(w, "Failed to fetch todos", http.StatusInternalServerError)
+				return
 			}
+			defer rows.Close()
+
+			var todos []todo
+			for rows.Next() {
+				var t todo
+				if err := rows.Scan(&t.Id, &t.Name, &t.Age, &t.Data); err != nil {
+					http.Error(w, "Error scanning todos", http.StatusInternalServerError)
+					return
+				}
+				todos = append(todos, t)
+			}
+
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			json.NewEncoder(w).Encode(todos)
+		} else {
+			intID, _ := strconv.Atoi(id)
+			var t todo
+			err := db.QueryRow("SELECT id, name, age, data FROM todos WHERE id = $1", int64(intID)).Scan(&t.Id, &t.Name, &t.Age, &t.Data)
+			if err != nil {
+				http.Error(w, "Todo not found", http.StatusNotFound)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(t)
 		}
 	} else if r.Method == http.MethodPut {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "failed ", http.StatusInternalServerError)
+			http.Error(w, "failed reading request body", http.StatusInternalServerError)
 			return
 		}
 		defer r.Body.Close()
@@ -82,8 +122,13 @@ func postTodo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		todoItems[listdata.Id] = listdata
-
+		// Update todo in the database
+		query := `UPDATE todos SET name = $2, age = $3, data = $4 WHERE id = $1`
+		_, err = db.Exec(query, listdata.Id, listdata.Name, listdata.Age, listdata.Data)
+		if err != nil {
+			http.Error(w, "Failed to update todo", http.StatusInternalServerError)
+			return
+		}
 	} else if r.Method == http.MethodDelete {
 		query := r.URL.Query()
 		id := query.Get("id")
@@ -99,26 +144,20 @@ func postTodo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		todoID := int64(intID)
-
-		if _, ok := todoItems[todoID]; !ok {
-			http.Error(w, "Todo item not found", http.StatusNotFound)
+		// Delete todo from the database
+		deleteQuery := `DELETE FROM todos WHERE id = $1`
+		_, err = db.Exec(deleteQuery, int64(intID))
+		if err != nil {
+			http.Error(w, "Failed to delete todo", http.StatusInternalServerError)
 			return
 		}
-		delete(todoItems, todoID)
 		w.WriteHeader(http.StatusNoContent)
 	}
-
 }
 
 type todo struct {
 	Id   int64  `json:"id"`
 	Name string `json:"name"`
 	Age  int64  `json:"age"`
-	Data string `json:"data"`
-}
-
-type newtodo struct {
-	Id   int64  `json:"id"`
 	Data string `json:"data"`
 }
